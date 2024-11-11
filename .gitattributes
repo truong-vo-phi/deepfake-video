@@ -171,3 +171,6 @@ f756d038-56e6-461f-a5b4-c8fcb8ec79b3.mov filter=lfs diff=lfs merge=lfs -text
 f88c0909-8bd6-40ca-9519-af84c4bbb433.mov filter=lfs diff=lfs merge=lfs -text
 fb99fc9c-9f08-4a5d-ae1a-a7c519ae74a6.mov filter=lfs diff=lfs merge=lfs -text
 fcba8c52-03db-41f9-9094-b04b7ffd5016.mov filter=lfs diff=lfs merge=lfs -text
+fake/** filter=lfs diff=lfs merge=lfs -text
+real/** filter=lfs diff=lfs merge=lfs -text
+metadata.csv filter=lfs diff=lfs merge=lfs -text
