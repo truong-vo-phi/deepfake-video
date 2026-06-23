@@ -1,7 +1,13 @@
-import argparse
 import csv
 import random
 from pathlib import Path
+from runtime_paths import PATHS
+
+
+SEED = 42
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.15
+INCLUDE_LOW_QUALITY = False
 
 
 def read_csv(path: Path) -> list[dict]:
@@ -50,28 +56,11 @@ def allocate_ids(ids: list[int], train_ratio: float, val_ratio: float):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--input-report",
-        type=str,
-        default="D:/Project/deepfake-video/outputs/sdfvd2_landmarks/stage04_validation_report.csv",
-    )
-    parser.add_argument(
-        "--out-dir",
-        type=str,
-        default="D:/Project/deepfake-video/splits",
-    )
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--train-ratio", type=float, default=0.7)
-    parser.add_argument("--val-ratio", type=float, default=0.15)
-    parser.add_argument("--include-low-quality", action="store_true")
-    args = parser.parse_args()
-
-    rows = read_csv(Path(args.input_report))
+    rows = read_csv(PATHS["stage04_report"])
     if not rows:
         raise ValueError("Input report is empty.")
 
-    if args.include_low_quality:
+    if INCLUDE_LOW_QUALITY:
         usable = rows
     else:
         usable = [r for r in rows if str(r.get("quality_gate_pass", "")).lower() == "true"]
@@ -79,20 +68,20 @@ def main():
     if not usable:
         raise ValueError("No usable rows after quality filtering.")
 
-    source_ids = sorted({to_int(r.get("source_id", -1), -1) for r in usable if to_int(r.get("source_id", -1), -1) > 0})
+    source_ids = sorted({to_int(r.get("source_id", -1), -1) for r in usable if to_int(r.get("source_id", -1), -1) >= 0})
     if len(source_ids) < 3:
         raise ValueError("Not enough source_id to split.")
 
-    rng = random.Random(args.seed)
+    rng = random.Random(SEED)
     rng.shuffle(source_ids)
 
-    train_ids, val_ids, test_ids = allocate_ids(source_ids, args.train_ratio, args.val_ratio)
+    train_ids, val_ids, test_ids = allocate_ids(source_ids, TRAIN_RATIO, VAL_RATIO)
 
     train_rows = [r for r in usable if to_int(r.get("source_id", -1), -1) in train_ids]
     val_rows = [r for r in usable if to_int(r.get("source_id", -1), -1) in val_ids]
     test_rows = [r for r in usable if to_int(r.get("source_id", -1), -1) in test_ids]
 
-    out_dir = Path(args.out_dir)
+    out_dir = PATHS["splits_dir"]
     write_csv(out_dir / "train.csv", train_rows)
     write_csv(out_dir / "val.csv", val_rows)
     write_csv(out_dir / "test.csv", test_rows)
@@ -104,6 +93,7 @@ def main():
         print(f"{name}: rows={len(split_rows)} real={real} fake={fake} source_ids={len(ids)}")
 
     print("Split completed.")
+    print(f"Dataset: {PATHS['dataset_name']}")
     print(f"Usable rows: {len(usable)} / Total rows: {len(rows)}")
     summarize("train", train_rows)
     summarize("val", val_rows)

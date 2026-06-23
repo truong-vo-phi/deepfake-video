@@ -9,13 +9,16 @@ from torch import nn
 from dataset_geophoto import GeoPhotoDataset
 from graph import build_adjacency, normalize_adjacency
 from model_geophoto_stgcn import GeoPhotoSTGCN
+from runtime_paths import PATHS, ROOT
 
+
+DATASET_TAG = PATHS["dataset_name"].lower().replace(".", "").replace("-", "_")
 
 CONFIG = {
-    "train_csv": "D:/Project/deepfake-video/splits/train.csv",
-    "val_csv": "D:/Project/deepfake-video/splits/val.csv",
-    "checkpoint_dir": "D:/Project/deepfake-video/checkpoints",
-    "batch_size": 8,
+    "train_csv": str(PATHS["train_csv"]),
+    "val_csv": str(PATHS["val_csv"]),
+    "checkpoint_dir": str(ROOT / "checkpoints"),
+    "batch_size": 16,
     "num_workers": 0,
     "lr": 3e-5,
     "weight_decay": 1e-4,
@@ -26,9 +29,9 @@ CONFIG = {
     "scheduler_factor": 0.5,
     "scheduler_patience": 2,
     "min_lr": 1e-6,
-    "save_prefix": "geophoto_stgcn",
-    "photo_frames": 8,
-    "image_size": 112,
+    "save_prefix": f"{DATASET_TAG}_geophoto_stgcn",
+    "photo_frames": 4,
+    "image_size": 96,
 }
 
 
@@ -38,8 +41,8 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
 
 
 def count_labels(dataset):
@@ -93,10 +96,23 @@ def eval_epoch(model, loader, a_norm, criterion, device):
 
 
 def train_one_seed(seed, train_ds, val_ds, a_norm, c, v, ckpt_dir: Path):
+    print(f"\n--- Starting Training for Seed {seed} ---")
     set_seed(seed)
     device = torch.device(CONFIG["device"])
-    train_loader = DataLoader(train_ds, batch_size=CONFIG["batch_size"], shuffle=True, num_workers=CONFIG["num_workers"])
-    val_loader = DataLoader(val_ds, batch_size=CONFIG["batch_size"], shuffle=False, num_workers=CONFIG["num_workers"])
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=CONFIG["batch_size"],
+        shuffle=True,
+        num_workers=CONFIG["num_workers"],
+        pin_memory=torch.cuda.is_available(),
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=CONFIG["batch_size"],
+        shuffle=False,
+        num_workers=CONFIG["num_workers"],
+        pin_memory=torch.cuda.is_available(),
+    )
 
     model = GeoPhotoSTGCN(in_channels=c, num_classes=2).to(device)
     criterion = nn.CrossEntropyLoss(weight=build_class_weight(train_ds, device))
@@ -161,15 +177,23 @@ def train_one_seed(seed, train_ds, val_ds, a_norm, c, v, ckpt_dir: Path):
 
 
 def main():
+    print(f"\nInitializing GeoPhoto Cross-Attention ST-GCN Training for dataset: {PATHS['dataset_name']}")
     device = torch.device(CONFIG["device"])
+    print(f"Using device: {device}")
+    
+    print(f"Loading datasets...")
     train_ds = GeoPhotoDataset(CONFIG["train_csv"], photo_frames=CONFIG["photo_frames"], image_size=CONFIG["image_size"])
     val_ds = GeoPhotoDataset(CONFIG["val_csv"], photo_frames=CONFIG["photo_frames"], image_size=CONFIG["image_size"])
+    print(f"Loaded {len(train_ds)} train samples, {len(val_ds)} val samples.")
+
     sample = train_ds[0]["x_geo"]
     c, _, v = sample.shape
     a_norm = torch.tensor(normalize_adjacency(build_adjacency(num_nodes=v)), dtype=torch.float32, device=device)
 
     ckpt_dir = Path(CONFIG["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Checkpoints will be saved to: {ckpt_dir}\n")
+    
     results = [train_one_seed(seed, train_ds, val_ds, a_norm, c, v, ckpt_dir) for seed in CONFIG["seeds"]]
 
     accs = np.array([r["best_val_acc"] for r in results], dtype=np.float32)
@@ -200,3 +224,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

@@ -9,13 +9,16 @@ from torch import nn
 from dataset import LandmarkDataset
 from graph import build_adjacency, normalize_adjacency
 from model_stgcn import STGCNClassifier
+from runtime_paths import PATHS, ROOT
 
+
+DATASET_TAG = PATHS["dataset_name"].lower().replace(".", "").replace("-", "_")
 
 CONFIG = {
-    "train_csv": "D:/Project/deepfake-video/splits/train.csv",
-    "val_csv": "D:/Project/deepfake-video/splits/val.csv",
-    "checkpoint_dir": "D:/Project/deepfake-video/checkpoints",
-    "batch_size": 16,
+    "train_csv": str(PATHS["train_csv"]),
+    "val_csv": str(PATHS["val_csv"]),
+    "checkpoint_dir": str(ROOT / "checkpoints"),
+    "batch_size": 32,
     "num_workers": 0,
     "lr": 5e-5,
     "weight_decay": 1e-4,
@@ -26,7 +29,7 @@ CONFIG = {
     "scheduler_factor": 0.5,
     "scheduler_patience": 3,
     "min_lr": 1e-6,
-    "save_prefix": "stgcn_baseline",
+    "save_prefix": f"{DATASET_TAG}_stgcn_baseline",
 }
 
 
@@ -36,8 +39,8 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cudnn.benchmark = True
 
 
 def run_epoch(model, loader, a_norm, criterion, optimizer, device):
@@ -103,6 +106,7 @@ def build_class_weight(train_ds, device):
 
 
 def train_one_seed(seed: int, train_ds, val_ds, a_norm, c, v, ckpt_dir: Path):
+    print(f"\n--- Starting Training for Seed {seed} ---")
     set_seed(seed)
     device = torch.device(CONFIG["device"])
 
@@ -111,12 +115,14 @@ def train_one_seed(seed: int, train_ds, val_ds, a_norm, c, v, ckpt_dir: Path):
         batch_size=CONFIG["batch_size"],
         shuffle=True,
         num_workers=CONFIG["num_workers"],
+        pin_memory=torch.cuda.is_available(),
     )
     val_loader = DataLoader(
         val_ds,
         batch_size=CONFIG["batch_size"],
         shuffle=False,
         num_workers=CONFIG["num_workers"],
+        pin_memory=torch.cuda.is_available(),
     )
 
     model = STGCNClassifier(in_channels=c, num_classes=2).to(device)
@@ -206,9 +212,14 @@ def train_one_seed(seed: int, train_ds, val_ds, a_norm, c, v, ckpt_dir: Path):
 
 
 def main():
+    print(f"\nInitializing ST-GCN Baseline Training for dataset: {PATHS['dataset_name']}")
     device = torch.device(CONFIG["device"])
+    print(f"Using device: {device}")
+    
+    print(f"Loading datasets...")
     train_ds = LandmarkDataset(CONFIG["train_csv"])
     val_ds = LandmarkDataset(CONFIG["val_csv"])
+    print(f"Loaded {len(train_ds)} train samples, {len(val_ds)} val samples.")
 
     sample = train_ds[0]["x"]
     c, _, v = sample.shape
@@ -217,6 +228,8 @@ def main():
 
     ckpt_dir = Path(CONFIG["checkpoint_dir"])
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Checkpoints will be saved to: {ckpt_dir}\n")
+    
     seed_results = []
     for seed in CONFIG["seeds"]:
         result = train_one_seed(seed, train_ds, val_ds, a_norm, c, v, ckpt_dir)
@@ -252,3 +265,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+

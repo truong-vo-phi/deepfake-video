@@ -1,0 +1,26 @@
+# Datasets
+BioDeepAV/
+Celeb/
+FaceForensics++_C23/
+FakeAVCeleb/
+archive(1)/
+deepfake-detection-challenge/
+*.zip
+
+# Preprocessing Outputs, Splits, and Checkpoints
+outputs/
+splits/
+splits_*/
+checkpoints/
+results/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & System Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

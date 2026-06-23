@@ -1,8 +1,15 @@
-import argparse
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
+from runtime_paths import PATHS
+
+
+EXPECTED_T = 32
+EXPECTED_V = 468
+EXPECTED_C = 8
+MIN_DETECTED_RATIO = 0.5
 
 
 def read_csv(path: Path) -> list[dict]:
@@ -92,47 +99,37 @@ def validate_npy(path: Path, expected_t: int, expected_v: int, expected_c: int) 
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--manifest",
-        type=str,
-        default="D:/Project/deepfake-video/outputs/sdfvd2_landmarks/stage03_landmark_manifest.csv",
-    )
-    parser.add_argument(
-        "--out-report",
-        type=str,
-        default="D:/Project/deepfake-video/outputs/sdfvd2_landmarks/stage04_validation_report.csv",
-    )
-    parser.add_argument("--expected-t", type=int, default=32)
-    parser.add_argument("--expected-v", type=int, default=468)
-    parser.add_argument("--expected-c", type=int, default=8)
-    parser.add_argument(
-        "--min-detected-ratio",
-        type=float,
-        default=0.5,
-        help="Ngưỡng detection ratio để pass quality gate.",
-    )
-    args = parser.parse_args()
-
-    rows = read_csv(Path(args.manifest))
+    rows = read_csv(PATHS["stage03_manifest"])
     report_rows = []
 
     for row in rows:
         landmark_path = Path(row.get("landmark_path", ""))
         npy_check = validate_npy(
             landmark_path,
-            expected_t=args.expected_t,
-            expected_v=args.expected_v,
-            expected_c=args.expected_c,
+            expected_t=EXPECTED_T,
+            expected_v=EXPECTED_V,
+            expected_c=EXPECTED_C,
         )
 
-        detected_ratio = to_float(row.get("detected_ratio", "0"), default=0.0)
-        failed_frames = to_int(row.get("failed_frames", "0"), default=0)
+        detected_ratio = to_float(row.get("detected_ratio", ""), default=0.0)
+        failed_frames = to_int(row.get("failed_frames", ""), default=0)
         status_stage03 = row.get("status", "")
+
+        # Backfill from per-video metadata if manifest fields are missing/zero.
+        if (detected_ratio <= 0.0) or (failed_frames == 0 and status_stage03 == "ok"):
+            meta_path = Path(row.get("meta_path", ""))
+            if meta_path.exists():
+                try:
+                    with meta_path.open("r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    detected_ratio = float(meta.get("detected_ratio", detected_ratio))
+                    failed_frames = int(meta.get("failed_frames", failed_frames))
+                except Exception:
+                    pass
 
         gate_pass = (
             npy_check["validity"] == "ok"
-            and detected_ratio >= args.min_detected_ratio
+            and detected_ratio >= MIN_DETECTED_RATIO
             and status_stage03 == "ok"
         )
 
@@ -149,7 +146,7 @@ def main():
                 "detected_ratio": detected_ratio,
                 "failed_frames": failed_frames,
                 "landmark_path": str(landmark_path),
-                "expected_shape": f"({args.expected_t},{args.expected_v},{args.expected_c})",
+                "expected_shape": f"({EXPECTED_T},{EXPECTED_V},{EXPECTED_C})",
                 "shape_ok": npy_check["shape_ok"],
                 "has_nan": npy_check["has_nan"],
                 "all_zero": npy_check["all_zero"],
@@ -160,7 +157,7 @@ def main():
             }
         )
 
-    write_csv(Path(args.out_report), report_rows)
+    write_csv(PATHS["stage04_report"], report_rows)
 
     total = len(report_rows)
     pass_count = sum(1 for r in report_rows if r["quality_gate_pass"])
@@ -169,7 +166,8 @@ def main():
     print(f"Total: {total}")
     print(f"Pass: {pass_count}")
     print(f"Fail: {fail_count}")
-    print(f"Report: {args.out_report}")
+    print(f"Dataset: {PATHS['dataset_name']}")
+    print(f"Report: {PATHS['stage04_report']}")
 
 
 if __name__ == "__main__":

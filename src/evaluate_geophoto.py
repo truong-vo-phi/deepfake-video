@@ -5,22 +5,27 @@ import torch
 from torch.utils.data import DataLoader
 
 from dataset_geophoto import GeoPhotoDataset
+from metrics_binary import binary_auc, binary_eer, roc_curve_from_scores
 from model_geophoto_stgcn import GeoPhotoSTGCN
+from runtime_paths import PATHS, ROOT
+import matplotlib.pyplot as plt
 
+
+DATASET_TAG = PATHS["dataset_name"].lower().replace(".", "").replace("-", "_")
 
 CONFIG = {
-    "test_csv": "D:/Project/deepfake-video/splits/test.csv",
-    "checkpoint_path": "D:/Project/deepfake-video/checkpoints/geophoto_stgcn_best.pt",
-    "out_csv": "D:/Project/deepfake-video/results/geophoto_test_predictions.csv",
+    "test_csv": str(PATHS["test_csv"]),
+    "checkpoint_path": str(ROOT / f"checkpoints/{DATASET_TAG}_geophoto_stgcn_best.pt"),
+    "out_csv": str(ROOT / f"results/{DATASET_TAG}_geophoto_test_predictions.csv"),
     "batch_size": 8,
     "num_workers": 0,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
-    "photo_frames": 8,
-    "image_size": 112,
+    "photo_frames": 4,
+    "image_size": 96,
 }
 
 
-def compute_binary_metrics(y_true: np.ndarray, y_pred: np.ndarray):
+def compute_binary_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_score: np.ndarray):
     tp = int(((y_true == 1) & (y_pred == 1)).sum())
     tn = int(((y_true == 0) & (y_pred == 0)).sum())
     fp = int(((y_true == 0) & (y_pred == 1)).sum())
@@ -29,7 +34,18 @@ def compute_binary_metrics(y_true: np.ndarray, y_pred: np.ndarray):
     precision = tp / max(tp + fp, 1)
     recall = tp / max(tp + fn, 1)
     f1 = 2 * precision * recall / max(precision + recall, 1e-8)
-    return {"accuracy": acc, "precision": precision, "recall": recall, "f1": f1, "tp": tp, "tn": tn, "fp": fp, "fn": fn}
+    return {
+        "accuracy": acc,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "auc": binary_auc(y_true, y_score),
+        "eer": binary_eer(y_true, y_score),
+        "tp": tp,
+        "tn": tn,
+        "fp": fp,
+        "fn": fn,
+    }
 
 
 def save_predictions(path: Path, rows: list[dict]):
@@ -43,14 +59,29 @@ def save_predictions(path: Path, rows: list[dict]):
 
 @torch.no_grad()
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Evaluate GeoPhoto ST-GCN on a test set.")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint.")
+    parser.add_argument("--test-csv", type=str, default=None, help="Path to test CSV.")
+    parser.add_argument("--out-csv", type=str, default=None, help="Path to output predictions CSV.")
+    args = parser.parse_args()
+
+    checkpoint_path = args.checkpoint or CONFIG["checkpoint_path"]
+    test_csv = args.test_csv or CONFIG["test_csv"]
+    out_csv = args.out_csv or CONFIG["out_csv"]
+
+    print(f"\nRunning GeoPhoto ST-GCN Evaluation...")
+    print(f"  Checkpoint: {checkpoint_path}")
+    print(f"  Test CSV:   {test_csv}")
+
     device = torch.device(CONFIG["device"])
-    ckpt = torch.load(CONFIG["checkpoint_path"], map_location=device, weights_only=False)
+    ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model = GeoPhotoSTGCN(in_channels=ckpt["in_channels"], num_classes=2).to(device)
     model.load_state_dict(ckpt["model_state_dict"])
     model.eval()
     a_norm = ckpt["a_norm"].to(device)
 
-    ds = GeoPhotoDataset(CONFIG["test_csv"], photo_frames=CONFIG["photo_frames"], image_size=CONFIG["image_size"])
+    ds = GeoPhotoDataset(test_csv, photo_frames=CONFIG["photo_frames"], image_size=CONFIG["image_size"])
     loader = DataLoader(ds, batch_size=CONFIG["batch_size"], shuffle=False, num_workers=CONFIG["num_workers"])
 
     y_true, y_pred, pred_rows = [], [], []
@@ -76,14 +107,43 @@ def main():
                 }
             )
 
-    metrics = compute_binary_metrics(np.asarray(y_true, dtype=np.int64), np.asarray(y_pred, dtype=np.int64))
-    save_predictions(Path(CONFIG["out_csv"]), pred_rows)
+    y_true = np.asarray(y_true, dtype=np.int64)
+    y_pred = np.asarray(y_pred, dtype=np.int64)
+    y_score = np.asarray([r["prob_fake"] for r in pred_rows], dtype=np.float64)
+    metrics = compute_binary_metrics(y_true, y_pred, y_score)
+    save_predictions(Path(out_csv), pred_rows)
 
-    print("GeoPhoto test metrics")
+    # Plot and save ROC Curve
+    fpr, tpr = roc_curve_from_scores(y_true, y_score)
+    fnr = 1.0 - tpr
+    eer_idx = int(np.argmin(np.abs(fpr - fnr)))
+    eer_val = metrics["eer"]
+    auc_val = metrics["auc"]
+
+    plt.figure(figsize=(7, 6))
+    plt.plot(fpr, tpr, color="darkorange", lw=2, label=f"ROC curve (AUC = {auc_val:.4f})")
+    plt.plot([0, 1], [0, 1], color="navy", lw=1.5, linestyle="--", label="Random (AUC = 0.5000)")
+    plt.scatter(fpr[eer_idx], tpr[eer_idx], color="red", zorder=5, s=50, label=f"EER = {eer_val:.4f}")
+    
+    plt.xlim([-0.02, 1.02])
+    plt.ylim([-0.02, 1.02])
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.title(f"ROC Curve - GeoPhoto ST-GCN")
+    plt.legend(loc="lower right")
+    plt.grid(True, linestyle=":", alpha=0.6)
+    
+    out_img = Path(out_csv).with_suffix(".png")
+    plt.savefig(out_img, dpi=150, bbox_inches="tight")
+    plt.close()
+
+    print("\nGeoPhoto test metrics:")
     for k, v in metrics.items():
-        print(f"{k}: {v:.6f}" if isinstance(v, float) else f"{k}: {v}")
-    print(f"Predictions: {CONFIG['out_csv']}")
+        print(f"  {k}: {v:.6f}" if isinstance(v, float) else f"  {k}: {v}")
+    print(f"Predictions saved to: {out_csv}")
+    print(f"ROC Curve Plot saved to: {out_img}\n")
 
 
 if __name__ == "__main__":
     main()
+
