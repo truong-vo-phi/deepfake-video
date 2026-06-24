@@ -122,12 +122,33 @@ def train_one_seed(seed: int, train_ds, val_ds, a_norm, c, v, ckpt_dir: Path):
     )
 
     best_path = ckpt_dir / f"{CONFIG['save_prefix']}_seed{seed}_best.pt"
+    last_path = ckpt_dir / f"{CONFIG['save_prefix']}_seed{seed}_last.pt"
     log_path = ckpt_dir / f"{CONFIG['save_prefix']}_seed{seed}_log.json"
     best_val_loss, best_val_acc, best_epoch = float("inf"), -1.0, -1
     no_improve = 0
     history = []
+    start_epoch = 1
 
-    for epoch in range(1, CONFIG["epochs"] + 1):
+    # Check if we can resume training
+    if last_path.exists():
+        print(f"[seed={seed}] Found last checkpoint at {last_path}. Resuming training...")
+        try:
+            checkpoint = torch.load(last_path, map_location=device)
+            model.load_state_dict(checkpoint["model_state_dict"])
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if checkpoint.get("scheduler_state_dict") and scheduler:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            start_epoch = checkpoint["epoch"] + 1
+            best_val_loss = checkpoint["best_val_loss"]
+            best_val_acc = checkpoint["best_val_acc"]
+            best_epoch = checkpoint["best_epoch"]
+            no_improve = checkpoint["no_improve"]
+            history = checkpoint.get("history", [])
+            print(f"[seed={seed}] Resumed successfully from epoch {checkpoint['epoch']} (Best Val Loss: {best_val_loss:.4f})")
+        except Exception as e:
+            print(f"[seed={seed}] Failed to load last checkpoint: {e}. Starting from scratch.")
+
+    for epoch in range(start_epoch, CONFIG["epochs"] + 1):
         train_loss, train_acc = run_epoch(model, train_loader, a_norm, criterion, optimizer, device)
         val_loss, val_acc = evaluate(model, val_loader, a_norm, criterion, device)
         scheduler.step(val_loss)
@@ -169,12 +190,35 @@ def train_one_seed(seed: int, train_ds, val_ds, a_norm, c, v, ckpt_dir: Path):
         else:
             no_improve += 1
 
+        # Save last checkpoint at the end of each epoch
+        torch.save(
+            {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict() if scheduler else None,
+                "best_val_loss": best_val_loss,
+                "best_val_acc": best_val_acc,
+                "best_epoch": best_epoch,
+                "no_improve": no_improve,
+                "history": history,
+            },
+            last_path,
+        )
+
         if no_improve >= CONFIG["early_stopping_patience"]:
             print(f"[seed={seed}] Early stopping at epoch {epoch}.")
             break
 
     with log_path.open("w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+
+    # Clean up last checkpoint on successful completion
+    if last_path.exists():
+        try:
+            last_path.unlink()
+        except Exception:
+            pass
 
     return {
         "seed": seed,
